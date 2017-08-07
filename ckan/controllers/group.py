@@ -171,14 +171,24 @@ class GroupController(base.BaseController):
             context['user_id'] = c.userobj.id
             context['user_is_admin'] = c.userobj.sysadmin
 
-        data_dict_global_results = {
-            'all_fields': False,
-            'q': q,
-            'sort': sort_by,
-            'type': group_type or 'group',
-        }
-        global_results = self._action('group_list')(context,
-                                                    data_dict_global_results)
+        try:
+            data_dict_global_results = {
+                'all_fields': False,
+                'q': q,
+                'sort': sort_by,
+                'type': group_type or 'group',
+            }
+            global_results = self._action('group_list')(
+                context, data_dict_global_results)
+        except ValidationError as e:
+            if e.error_dict and e.error_dict.get('message'):
+                msg = e.error_dict['message']
+            else:
+                msg = str(e)
+            h.flash_error(msg)
+            c.page = h.Page([], 0)
+            return render(self._index_template(group_type),
+                          extra_vars={'group_type': group_type})
 
         data_dict_page_results = {
             'all_fields': True,
@@ -271,8 +281,9 @@ class GroupController(base.BaseController):
         c.drill_down_url = drill_down_url
 
         def remove_field(key, value=None, replace=None):
+            controller = lookup_group_controller(group_type)
             return h.remove_url_param(key, value=value, replace=replace,
-                                      controller='group', action='read',
+                                      controller=controller, action='read',
                                       extras=dict(id=c.group_dict.get('name')))
 
         c.remove_field = remove_field
@@ -284,6 +295,7 @@ class GroupController(base.BaseController):
 
         try:
             c.fields = []
+            c.fields_grouped = {}
             search_extras = {}
             for (param, value) in request.params.items():
                 if not param in ['q', 'page', 'sort'] \
@@ -291,6 +303,10 @@ class GroupController(base.BaseController):
                     if not param.startswith('ext_'):
                         c.fields.append((param, value))
                         q += ' %s: "%s"' % (param, value)
+                        if param not in c.fields_grouped:
+                            c.fields_grouped[param] = [value]
+                        else:
+                            c.fields_grouped[param].append(value)
                     else:
                         search_extras[param] = value
 
@@ -392,13 +408,16 @@ class GroupController(base.BaseController):
         data_dict = {'id': id, 'type': group_type}
 
         try:
+            self._check_access('bulk_update_public', context, {'org_id': id})
             # Do not query for the group datasets when dictizing, as they will
             # be ignored and get requested on the controller anyway
             data_dict['include_datasets'] = False
             c.group_dict = self._action('group_show')(context, data_dict)
             c.group = context['group']
-        except (NotFound, NotAuthorized):
+        except NotFound:
             abort(404, _('Group not found'))
+        except NotAuthorized:
+            abort(403, _('User %r not authorized to edit %s') % (c.user, id))
 
         if not c.group_dict['is_organization']:
             # FIXME: better error
@@ -644,14 +663,21 @@ class GroupController(base.BaseController):
                    'user': c.user}
 
         try:
+            data_dict = {'id': id}
+            check_access('group_edit_permissions', context, data_dict)
             c.members = self._action('member_list')(
                 context, {'id': id, 'object_type': 'user'}
             )
-            data_dict = {'id': id}
             data_dict['include_datasets'] = False
             c.group_dict = self._action('group_show')(context, data_dict)
-        except (NotFound, NotAuthorized):
+        except NotFound:
             abort(404, _('Group not found'))
+        except NotAuthorized:
+            abort(
+                403,
+                _('User %r not authorized to edit members of %s') % (
+                    c.user, id))
+
         return self._render_template('group/members.html', group_type)
 
     def member_new(self, id):
@@ -659,8 +685,11 @@ class GroupController(base.BaseController):
 
         context = {'model': model, 'session': model.Session,
                    'user': c.user}
+        try:
+            self._check_access('group_member_create', context, {'id': id})
+        except NotAuthorized:
+            abort(403, _('Unauthorized to create group %s members') % '')
 
-        #self._check_access('group_delete', context, {'id': id})
         try:
             data_dict = {'id': id}
             data_dict['include_datasets'] = False
