@@ -326,8 +326,16 @@ def package_update(context, data_dict):
 
     return_id_only = context.get('return_id_only', False)
 
-    # Make sure that a user provided schema is not used on package_show
+    # Make sure that a user provided schema is not used in create_views
+    # and on package_show
     context.pop('schema', None)
+
+    # Create default views for resources if necessary
+    if data.get('resources'):
+        logic.get_action('package_create_default_resource_views')(
+            {'model': context['model'], 'user': context['user'],
+             'ignore_auth': True},
+            {'package': data})
 
     # we could update the dataset so we should still be able to read it.
     context['ignore_auth'] = True
